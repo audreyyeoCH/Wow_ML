@@ -4,6 +4,13 @@ When I started my MSci Biostatistics degree at the University of Zurich, in the 
 
 Please find my poster and presentation (cred to project buddy for moral support too) in situ. I felt like it was a success and the graphics very clear for a novice, about to start on a learning journey in spatial statistics !
 
+## AudreyYeopointreflevelposter.pdf
+## JournalClubgeostatscopy.pdf
+
 # ml learning made accessible
 
 If you think you had a hard time learning statistics and can't wrap your head around it. Here are more accesible material taken from recent publication on methods. That's right, I skipped the textbook and brought machine learning methods, to you. 
+
+I did this not for application necessarily. But for a sensitivity that methods are a complex world. When one is sensitive to the rigorous world of methods, one can appreciate Science. This is for Science in a way, and so, it is also for you. 
+
+## crossvalid_nutshell.pdf
