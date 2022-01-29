@@ -1,0 +1,453 @@
+---
+title: 
+author: 
+date: "December 11, 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+libs_to_load <- 
+  c("tensorflow", "keras", "NeuralNetTools", "neuralnet","cowplot", "knitr", "kableExtra",  "NeuralNetTools", "caret", "doParallel","gbm", "pROC", "xgboost",  "dpylr", "dbplyr", "tidyverse", "DiagrammeR", "data.table", "DT", "stringr", "DBI", "ggplot2", "RColorBrewer", "tidyr", "lubridate")
+libstoinstall <- libs_to_load[!(libs_to_load %in% installed.packages()[,"Package"])]
+devtools::install_github("rstudio/keras")
+if (length(libstoinstall)) install.packages(libstoinstall)
+lapply(libs_to_load, require, character.only = TRUE)
+options(tibble.width  = Inf)
+```
+
+## EDM
+```{r}
+# UCI : https://archive.ics.uci.edu/ml/datasets/AI4I+2020+Predictive+Maintenance+Dataset
+
+set.seed(160)
+# train <- sample(150, 100) # train based on 100 random observations
+# irisNN <- neuralnet(Species ~ Sepal.Length + Sepal.Width + Petal.Length + Petal.Width, rep=3,data=iris[train,], linear.output = FALSE)
+df = read.csv2("predictive_maintenance.csv", sep = ",", header = TRUE)
+names(df)
+
+colnames(df) <- c("UDI", "ProductID" , "Type", "AirTempK", 
+                  "ProcessTempK", "RotSpeedRPM", "TorqueNm", "ToolwearMin",
+                  "Target", "FailureType")
+# numerics
+df$AirTempK <- as.numeric(df$AirTempK)
+df$ProcessTempK <- as.numeric(df$ProcessTempK)
+df$RotSpeedRPM <- as.numeric(df$RotSpeedRPM)
+df$TorqueNm <- as.numeric(df$TorqueNm)
+df$ToolwearMin <- as.numeric(df$ToolwearMin)
+# df$FailureType <- factor(df$FailureType)
+df$Target <- factor(ifelse(df$Target == "1", "fail", "nofail"))
+df$FailureType <- factor(df$FailureType)
+df$Type <- factor(df$Type)
+levels(df$Target) <- make.names(levels(factor(df$Target)))
+levels(df$Type) <- make.names(levels(factor(df$Type)))
+levels(df$FailureType) <- make.names(levels(factor(df$FailureType)))
+
+library(splitTools)
+library(ranger)
+
+# Split data into partitions
+set.seed(3451)
+inds <- partition(df$ProductID, p = c(train = 0.6, valid = 0.2, test = 0.2))
+str(inds)
+train <- df[inds$train, ]
+valid <- df[inds$valid, ]
+test <- df[inds$test, ]
+
+######
+test %>% ggplot +
+  geom_bar(aes(x = Target, fill = Target))
+train %>% ggplot +
+  geom_bar(aes(x = Target, fill = Target))
+valid %>% ggplot +
+  geom_bar(aes(x = Target, fill = Target))
+######### NN takes on numerical variables only 
+machineNN <- neuralnet(Target ~AirTempK + ProcessTempK + RotSpeedRPM + TorqueNm +
+                         ToolwearMin, 
+                       data = train, 
+                       hidden = 5,
+                       linear.output = FALSE,
+                       act.fct = "tanh")
+par(mfrow = c(2,3))
+gwplot(machineNN, selected.covariate = "AirTempK")
+gwplot(machineNN, selected.covariate = "ProcessTempK")
+gwplot(machineNN, selected.covariate = "RotSpeedRPM")
+gwplot(machineNN, selected.covariate = "TorqueNm")
+gwplot(machineNN, selected.covariate = "ToolwearMin")
+
+
+new.output = neuralnet::compute(machineNN, covariate = matrix(c(298, 300, 300, 1551, 42,
+                                            300, 300, 1600, 63,263,
+                                            300, 300, 600, 63,263,
+                                            300, 300, 5600, 63,263), byrow = TRUE, ncol = 5))
+
+new.output
+plotnet(machineNN)
+```
+
+```{r}
+#EDA : corr
+library(ggcorrplot)
+numericdf <- df[,c("AirTempK", "ProcessTempK", "RotSpeedRPM", "TorqueNm", "ToolwearMin")]
+r <- cor(numericdf, use="complete.obs")
+ggcorrplot(r, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE)
+
+par(mfrow = c(2,3))
+
+plot(train$AirTempK, train$Target)
+plot(train$ProcessTempK, train$Target)
+plot(train$RotSpeedRPM, train$Target)
+plot(train$TorqueNm, train$Target)
+plot(train$ToolwearMin, train$Target)
+# checking for outliers prior to feature selection
+par(mfrow = c(2,3))
+df %>% ggplot() +
+  geom_boxplot(aes( x = FailureType, y = AirTempK, fill = FailureType)) +
+  # geom_jitter(aes(x = FailureType, y = AirTempK, colour = "red", size = 1, alpha = 0.1)) +
+  theme(axis.text.x = element_text(angle = 90),  legend.position = "none")  -> b1
+
+df %>% ggplot() +
+  geom_boxplot(aes( x = FailureType, y = ProcessTempK, fill = FailureType)) +
+  # geom_jitter(aes(x = FailureType, y = ProcessTempK, colour = "red", size = 1, alpha = 0.1)) +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "none") -> b2
+  
+df %>% ggplot() +
+  geom_boxplot(aes( x = FailureType, y = RotSpeedRPM, fill = FailureType)) +
+  # geom_jitter(aes(x = FailureType, y = TorqueNm, colour = "red", size = 1, alpha = 0.1)) +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "none") -> b3
+
+df %>% ggplot() +
+  geom_boxplot(aes( x = FailureType, y = TorqueNm, fill = FailureType)) +
+  # geom_jitter(aes(x = FailureType, y = TorqueNm, colour = "red", size = 1, alpha = 0.1)) +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "none") -> b4
+
+df %>% ggplot() +
+  geom_boxplot(aes( x = FailureType, y = ToolwearMin, fill = FailureType)) +
+  # geom_jitter(aes(x = FailureType, y = TorqueNm, colour = "red", size = 1, alpha = 0.1)) +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "none") -> b5
+
+
+plot_grid(
+  b1, b2, b3, b4, b5,
+  labels = c('A', 'B', 'C', 'D', 'E'),
+  align="hv"
+)
+
+
+###
+df %>% ggplot() +
+  geom_histogram( aes(x = AirTempK, fill = Target)) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="") -> h1
+
+df %>% ggplot() +
+  geom_histogram( aes(x = ProcessTempK, fill = Target)) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="")-> h2
+
+df %>% ggplot() +
+  geom_histogram( aes(x = RotSpeedRPM, fill = Target)) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="")-> h3
+
+df %>% ggplot() +
+  geom_histogram( aes(x = TorqueNm, fill = Target)) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="")-> h4
+
+df %>% ggplot() +
+  geom_histogram( aes(x = ToolwearMin, fill = Target)) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="")-> h5
+plot_grid(
+  h1, h2, h3, h4,h5,
+  labels = c('A', 'B', 'C', 'D', 'E'),
+  align="hv"
+)
+
+
+
+
+freq = table(df$FailureType, df$Target)
+
+knitr::kable(freq)
+```
+## GBM
+```{r}
+trainData <- train[, c(4:9)]
+testData  <- test[, c(4:9)]
+#
+trainX <-trainData[,-6]        # Pull out the dependent variable
+testX <- testData[,-6]
+sapply(trainX,summary) # Look at a summary of the training data
+ 
+## GENERALIZED BOOSTED RGRESSION MODEL (BGM)  
+ start.time <- Sys.time()
+# Set up training control
+ctrl <- trainControl(method = "repeatedcv",   # 10 fold cross validation
+                     number = 5,  
+                     repeats = 500 ,
+                     summaryFunction=twoClassSummary,    # Use AUC to pick the best model
+                     classProbs=TRUE,
+                     allowParallel = TRUE)
+ 
+# Use the expand.grid to specify the search space    
+# Note that the default search grid selects multiple values of each tuning parameter
+ 
+grid <- expand.grid(interaction.depth=c(1,2), # Depth of variable interactions
+                    n.trees=c(10,20),            # Num trees to fit
+                    shrinkage=c(0.01, 0.1),        # Try 2 values for learning rate 
+                    n.minobsinnode = 20)
+#                                            
+set.seed(1951)  # set the seed
+ 
+# Set up to do parallel processing   
+registerDoParallel(4)        # Registrer a parallel backend for train
+getDoParWorkers()
+ 
+gbm.tune <- train(x=trainX,y=trainData$Target,
+                              method = "gbm",
+                              metric = "ROC",
+                              trControl = ctrl,
+                              tuneGrid=grid,
+                              verbose=FALSE)
+gbm.tune
+gbm.tune$resample
+# Look at the tuning results
+# Note that ROC was the performance criterion used to select the optimal model.   
+gbm.tune$bestTune
+plot(gbm.tune)          # Plot the performance of the training models
+res <- gbm.tune$results
+res
+importance <- varImp(gbm.tune, scale=FALSE)
+print(importance)
+plot(importance)
+### GBM Model Predictions and Performance
+# Make predictions using the test data set
+gbm.pred <- predict(gbm.tune,testX)
+# gbm.pred <- predict(gbm.tune,valid)
+# gbm.pred <- predict(gbm.tune,train)
+
+
+#Look at the confusion matrix  
+cm.gbm = confusionMatrix(gbm.pred,testData$Target)   
+
+#Draw the ROC curve 
+gbm.probs <- predict(gbm.tune,testX,type="prob")
+
+head(gbm.probs)
+gbm.ROC <- roc(predictor=gbm.probs$fail,
+               response=testData$Target,
+               levels=rev(levels(testData$Target)))
+gbm.ROC$auc
+#Area under the curve: 0.8731
+plot(gbm.ROC,main="GBM ROC")
+# Plot the propability of poor segmentation
+histogram(~gbm.probs$fail|testData$Target,xlab="Probability of Poor Segmentation") 
+# low probability of poor segmentation
+
+
+### validation set
+gbm.vpred <- predict(gbm.tune,testX)
+#Look at the confusion matrix  
+cm.vgbm = confusionMatrix(gbm.vpred,testData$Target)   
+#Draw the ROC curve 
+gbm.vprobs <- predict(gbm.tune,valid,type="prob")
+head(gbm.vprobs)
+gbm.vROC <- roc(predictor=gbm.vprobs$fail,
+               response=valid$Target,
+               levels=rev(levels(valid$Target)))
+gbm.vROC$auc
+#Area under the curve: 0.8731
+plot(gbm.vROC,main="GBM ROC")
+# Plot the propability of poor segmentation
+histogram(~gbm.vprobs$fail|valid$Target,xlab="Probability of Poor Segmentation") 
+# low probability of poor segmentation
+
+
+
+
+
+
+end.time <- Sys.time()
+time.taken <- round(end.time - start.time,2)
+time.taken
+```
+# GBM without caret wrapper
+```{r}
+# ### 
+# gg = data.frame(SSE = c(gbm.fit$train.error, gbm.fit$valid.error),
+#                 cat = c(rep("train", 1000), rep("valid", 1000)),
+#                 ind = factor(c(rep(seq(1:1000),2))))
+# names(gg)
+# ggplot(gg) + geom_point(aes(x = ind, y = SSE, group = cat))
+### GBM without caret wrapper
+gbm.fit <- gbm(
+  formula = Target ~AirTempK + ProcessTempK +RotSpeedRPM +TorqueNm + 
+                          ToolwearMin, 
+                       data = df,
+  train.fraction = 0.6,
+  distribution = "gaussian",
+  n.trees = 10000,
+  interaction.depth = 1,
+  shrinkage = 0.001,
+  cv.folds = 5,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+  )  
+plot(gbm.fit$valid.error)
+plot(gbm.fit$train.error)
+
+gbm.perf(gbm.fit, plot.it = TRUE, method="cv")
+#valid is red
+#cv error is green
+#best iteration is blue
+# train error is black
+vmin = min(gbm.fit$valid.error)
+tmin = min(gbm.fit$train.error)
+(vmin-tmin) / tmin *100 # 42%
+(tmin-vmin) / vmin *100 
+```
+
+#NN
+```{r}
+##----------------------------------------------
+start.time <- Sys.time()
+
+
+# Set up for parallel procerssing
+set.seed(1951)
+registerDoParallel(4,cores=4)
+getDoParWorkers()
+
+# nn.grid <- expand.grid(nrounds = 500, #the maximum number of iterations
+#                         eta = c(0.01,0.1), # shrinkage
+#                         max_depth = c(2,6,10))
+
+# numFolds <- trainControl(method = 'repeatedcv', 
+#                          number = 10, 
+#                          repeats = 50,
+#                          classProbs = TRUE, 
+#                          verboseIter = TRUE, 
+#                          summaryFunction = twoClassSummary, 
+#                          preProcOptions = list(thresh = 0.75, ICAcomp = 3, k = 5))
+
+# fit2 <- train(Target ~AirTempK + ProcessTempK +RotSpeedRPM +TorqueNm + 
+#                           ToolwearMin, data = train, method = 'nnet', preProcess = c('center', 'scale'), trControl = numFolds, tuneGrid=expand.grid(size=c(10), decay=c(0.1)))
+grid <-  expand.grid(layer1 = c(32, 16),
+                     layer2 = c(32, 16),
+                     layer3 = 8)
+grid <-  expand.grid(layer1 = c(320, 160),
+                     layer2 = c(320, 160),
+                     layer3 = 800)
+nn.tune <-caret::train(Target ~AirTempK + ProcessTempK +RotSpeedRPM +TorqueNm + 
+                          ToolwearMin, 
+                       data = train,
+                       method="nnet",
+                       # tune.grid = data.frame(size = 5, decay = 0), 
+                       skip = TRUE,
+                       tune.grid = grid,
+                       trControl = trainControl(
+              method = "repeatedcv",
+              number = 5,
+              repeats = 50,
+              verboseIter = TRUE))
+nn.tune$bestTune
+plot(nn.tune)          # Plot the performance of the training models
+res <- nn.tune$results
+res
+ 
+### xgboostModel Predictions and Performance
+# Make predictions using the test data set
+nn.pred <- predict(nn.tune, testX)
+ 
+#Look at the confusion matrix  
+cm.nn = confusionMatrix(nn.pred,testData$Target)   
+ 
+#Draw the ROC curve 
+nn.probs <- predict(nn.tune,testX,type="prob")
+#head(xgb.probs)
+ 
+nn.ROC <- roc(predictor=nn.probs$fail,
+               response=testData$Target,
+               levels=rev(levels(testData$Target)))
+nn.ROC$auc
+ 
+plot(nn.ROC,main="nnt ROC")
+# Plot the propability of poor segmentation
+histogram(~nn.probs$fail|testData$Target,xlab="Probability of Poor Segmentation")
+importance <- varImp(nn.tune, scale=FALSE)
+print(importance)
+plot(importance)
+hi = data.frame(x = c(gbm.ROC$predictor, nn.ROC$predictor),
+             y = c(rep("gbm", length(gbm.ROC$predictor)), rep("nnet", length(nn.ROC$predictor)) ))
+
+#pres
+hi %>%  ggplot() + geom_boxplot(aes(x = x, y = y, colour = "purple" , fill= "purple", alpha = 0.2))+
+  theme_classic() + theme(legend.position = "none") +
+  labs( x = "ROC", y = "", title  = "ROC score compared across NN and GBM")
+
+### validation set
+nn.vpred <- predict(nn.tune,testX)
+#Look at the confusion matrix  
+cm.vnn = confusionMatrix(nn.vpred,testData$Target)   
+#Draw the ROC curve 
+nn.vprobs <- predict(nn.tune,valid,type="prob")
+head(nn.vprobs)
+nn.vROC <- roc(predictor=nn.vprobs$fail,
+               response=valid$Target,
+               levels=rev(levels(valid$Target)))
+nn.vROC$auc
+#Area under the curve: 0.8731
+plot(nn.vROC,main="GBM ROC")
+# Plot the propability of poor segmentation
+histogram(~nn.vprobs$fail|valid$Target,xlab="Probability of Poor Segmentation") 
+# low probability of poor segmentation
+
+end.time <- Sys.time()
+time.taken <- round(end.time - start.time,2)
+time.taken
+
+
+```
+#Putting results together
+```{r}
+overall = cbind(cm.gbm$overall, cm.nn$overall)
+round(overall, 3)
+byClass = data.frame(GBM = cm.gbm$byClass,
+                     NN = cm.nn$byClass)
+as.matrix(byClass )
+```
+#nnplot
+```{r}
+plotnet(nn.tune)
+```
+#Logistic Regression example
+```{r}
+set.seed(123) 
+fit.control <- trainControl(method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)
+fit <- train(Target ~AirTempK + ProcessTempK +RotSpeedRPM +TorqueNm + 
+                           ToolwearMin, data = df, method = "glm", 
+             family = "binomial", trControl = fit.control)
+lg.pred = predict(fit, testX)
+table(lg.pred)
+#Look at the confusion matrix  
+lg.con = confusionMatrix(lg.pred, testData$Target)   
+
+lg.probs = predict(fit, testX, type = "prob")
+lg.ROC <- roc(predictor=lg.probs$fail,
+               response=testData$Target,
+               levels=rev(levels(testData$Target)))
+lg.ROC$auc
+plot(lg.ROC,main="nnt ROC")
+# Plot the propability of poor segmentation
+histogram(~lg.probs$fail|testData$Target,xlab="Probability of Poor Segmentation") # correctly predicted. All the nofails are coorectly prodicted, most of the fails are correctly predicted.
+importance <- varImp(fit, scale=FALSE)
+print(importance)
+plot(importance)
+```
